@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Latest BOM Observations</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  
+  <style>
+    html, body, #map {
+      height: 100%;
+      margin: 0;
+      padding: 0;
+    }
+
+    #loading {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      z-index: 1000;
+      background: rgba(255, 255, 255, 0.9);
+      padding: 5px 10px;
+      border-radius: 5px;
+      font-family: sans-serif;
+      font-size: 14px;
+      display: none;
+      align-items: center;
+    }
+
+    .spinner {
+      border: 3px solid #f3f3f3;
+      border-top: 3px solid #3498db;
+      border-radius: 50%;
+      width: 14px;
+      height: 14px;
+      margin-right: 5px;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    /* Popup content styling */
+    .leaflet-popup-content {
+      max-height: 250px;
+      overflow-y: auto;
+    }
+    .leaflet-popup-content dl {
+      font-size: 0.85em;
+      margin: 0;
+      padding: 0;
+    }
+    .leaflet-popup-content dt {
+      font-weight: bold;
+    }
+    .leaflet-popup-content dd {
+      margin: 0 0 5px 10px;
+    }
+  </style>
+</head>
+<body>
+
+<div id="map"></div>
+<div id="loading"><div class="spinner"></div>Loading data...</div>
+
+<!-- Leaflet JS -->
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script>
+  const map = L.map('map');
+
+  // Tile layer with updated attribution
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap contributors | Data &copy; BOM'
+  }).addTo(map);
+
+  // Australia bounds
+  const australiaBounds = L.latLngBounds(
+    L.latLng(-44, 112),
+    L.latLng(-10, 154)
+  );
+  map.fitBounds(australiaBounds);
+
+  // Color scale based on air_temp
+  function getColor(temp) {
+    if (temp === null || isNaN(temp)) return '#808080'; // grey for null
+    return temp >= 40 ? '#800026' :
+           temp >= 35 ? '#e31a1c' :
+           temp >= 30 ? '#fc4e2a' :
+           temp >= 25 ? '#fd8d3c' :
+           temp >= 20 ? '#feb24c' :
+           temp >= 15 ? '#fed976' :
+           temp >= 10 ? '#ffffb2' :
+           temp >= 5  ? '#c7e9b4' :
+           temp >= 0  ? '#7fcdbb' :
+           temp >= -5 ? '#41b6c4' :
+                        '#1d91c0';
+  }
+
+  let geojsonLayer;
+
+  async function loadGeoJSON() {
+    const loading = document.getElementById('loading');
+    loading.style.display = 'flex';
+
+    try {
+      const response = await fetch('latest_obs.php', { cache: "no-store" });
+      if (!response.ok) throw new Error('Network response was not ok');
+      const data = await response.json();
+
+      if (geojsonLayer) map.removeLayer(geojsonLayer);
+
+      geojsonLayer = L.geoJSON(data, {
+        pointToLayer: function(feature, latlng) {
+          const temp = feature.properties.air_temp;
+          const color = getColor(temp);
+          return L.circleMarker(latlng, {
+            radius: 8,
+            fillColor: color,
+            color: '#000',   // black outline
+            weight: 1,
+            opacity: 1,
+            fillOpacity: 0.8
+          });
+        },
+        onEachFeature: function(feature, layer) {
+          if (feature.properties) {
+            const temp = feature.properties.air_temp;
+            layer.bindTooltip(
+              `${feature.properties.name} (${temp !== null ? temp : 'N/A'}°C)`,
+              { permanent: false, direction: 'top' }
+            );
+
+            layer.on('click', () => {
+              const props = feature.properties;
+              let dl = '<dl>';
+              // Bold name and air_temp at top
+              dl += `<dt>Name</dt><dd><strong>${props.name}</strong></dd>`;
+              dl += `<dt>Air Temp</dt><dd><strong>${props.air_temp !== null ? props.air_temp : 'N/A'}°C</strong></dd>`;
+
+              for (let key in props) {
+                if (key !== 'name' && key !== 'air_temp') {
+                  let value = props[key];
+                  if (key.toLowerCase().includes('copyright') || key.toLowerCase().includes('licence')) {
+                    value = `<small>${value}</small>`;
+                  }
+                  dl += `<dt>${key}</dt><dd>${value}</dd>`;
+                }
+              }
+              dl += '</dl>';
+              layer.bindPopup(dl).openPopup();
+            });
+          }
+        }
+      }).addTo(map);
+
+    } catch (error) {
+      console.error('Error loading GeoJSON:', error);
+    } finally {
+      loading.style.display = 'none';
+    }
+  }
+
+  // Initial load
+  loadGeoJSON();
+  // Refresh every 3 minutes
+  setInterval(loadGeoJSON, 180000);
+</script>
+</body>
+</html>
+
