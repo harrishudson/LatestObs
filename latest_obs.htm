@@ -4,10 +4,10 @@
   <meta charset="UTF-8">
   <title>Latest BOM Observations</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  
+
   <!-- Leaflet CSS -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
-  
+
   <style>
     html, body, #map {
       height: 100%;
@@ -72,16 +72,13 @@
 <script>
   const map = L.map('map');
 
-  // Tile layer with updated attribution
+  // Tile layer
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '&copy; OpenStreetMap contributors | Data &copy; BOM'
   }).addTo(map);
 
   // Australia bounds
-  const australiaBounds = L.latLngBounds(
-    L.latLng(-44, 112),
-    L.latLng(-10, 154)
-  );
+  const australiaBounds = L.latLngBounds(L.latLng(-44, 112), L.latLng(-10, 154));
   map.fitBounds(australiaBounds);
 
   // Color scale based on air_temp
@@ -120,7 +117,7 @@
           return L.circleMarker(latlng, {
             radius: 8,
             fillColor: color,
-            color: '#000',   // black outline
+            color: '#000',
             weight: 1,
             opacity: 1,
             fillOpacity: 0.8
@@ -128,30 +125,54 @@
         },
         onEachFeature: function(feature, layer) {
           if (feature.properties) {
-            const temp = feature.properties.air_temp;
-            layer.bindTooltip(
-              `${feature.properties.name} (${temp !== null ? temp : 'N/A'}°C)`,
-              { permanent: false, direction: 'top' }
-            );
+            const props = feature.properties;
+            const temp = props.air_temp;
 
+            // ✅ Safe tooltip using DOM element
+            const tooltipEl = document.createElement('div');
+            tooltipEl.textContent = `${props.name ?? 'Unknown'} (${temp !== null ? temp : 'N/A'}°C)`;
+            layer.bindTooltip(tooltipEl, {
+              permanent: false,
+              direction: 'top'
+            });
+
+            // ✅ Safe popup using DOM creation
             layer.on('click', () => {
-              const props = feature.properties;
-              let dl = '<dl>';
-              // Bold name and air_temp at top
-              dl += `<dt>Name</dt><dd><strong>${props.name}</strong></dd>`;
-              dl += `<dt>Air Temp</dt><dd><strong>${props.air_temp !== null ? props.air_temp : 'N/A'}°C</strong></dd>`;
+              const container = document.createElement('div');
+              const dl = document.createElement('dl');
+
+              const addRow = (key, value, small = false, bold = false) => {
+                const dt = document.createElement('dt');
+                dt.textContent = key;
+                const dd = document.createElement('dd');
+                if (small) {
+                  const smallTag = document.createElement('small');
+                  smallTag.textContent = value ?? 'N/A';
+                  dd.appendChild(smallTag);
+                } else if (bold) {
+                  const strong = document.createElement('strong');
+                  strong.textContent = value ?? 'N/A';
+                  dd.appendChild(strong);
+                } else {
+                  dd.textContent = value ?? 'N/A';
+                }
+                dl.appendChild(dt);
+                dl.appendChild(dd);
+              };
+
+              addRow('Name', props.name, false, true);
+              addRow('Air Temp', props.air_temp !== null ? `${props.air_temp}°C` : 'N/A', false, true);
 
               for (let key in props) {
                 if (key !== 'name' && key !== 'air_temp') {
-                  let value = props[key];
-                  if (key.toLowerCase().includes('copyright') || key.toLowerCase().includes('licence')) {
-                    value = `<small>${value}</small>`;
-                  }
-                  dl += `<dt>${key}</dt><dd>${value}</dd>`;
+                  const lower = key.toLowerCase();
+                  const isSmall = lower.includes('copyright') || lower.includes('licence');
+                  addRow(key, props[key], isSmall);
                 }
               }
-              dl += '</dl>';
-              layer.bindPopup(dl).openPopup();
+
+              container.appendChild(dl);
+              layer.bindPopup(container).openPopup();
             });
           }
         }
@@ -171,4 +192,3 @@
 </script>
 </body>
 </html>
-
