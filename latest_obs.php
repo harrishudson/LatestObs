@@ -1,7 +1,7 @@
 <?php
 date_default_timezone_set('Australia/Sydney');
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
+// error_reporting(E_ALL);
+// ini_set('display_errors', 1);
 
 header('Content-Type: application/json');
 
@@ -20,15 +20,14 @@ $STATE_MAP = [
 ];
 
 // --- PARAMETERS ---
-// State parameter: uppercase, valid values only
 $stateParam = strtoupper($_GET['state'] ?? 'ALL');
-if ($stateParam !== 'ALL' && $stateParam !== 'ACT' && !isset($STATE_MAP[$stateParam]) && !in_array($stateParam, $STATE_MAP)) {
+if ($stateParam !== 'ALL' && $stateParam !== 'ACT' &&
+    !isset($STATE_MAP[$stateParam]) && !in_array($stateParam, $STATE_MAP)) {
     http_response_code(400);
     echo json_encode(['error' => 'Invalid state parameter']);
     exit;
 }
 
-// WMO ID parameter: only digits allowed
 $wmoFilter = isset($_GET['wmo_id']) ? preg_replace('/[^0-9]/', '', $_GET['wmo_id']) : null;
 
 // Determine which states to fetch
@@ -47,17 +46,23 @@ if ($stateParam === 'ALL') {
 function extractJsonFromTgz($tgzFile, $stateAbbrev, $lastFetched) {
     $data = [];
 
-    // Use a unique temp file for the .tar to avoid concurrency issues
-    $tempTar = tempnam(sys_get_temp_dir(), 'bom_') . '.tar';
+    // Create unique temp dir for safe extraction
+    $tempDir = sys_get_temp_dir() . '/bom_' . bin2hex(random_bytes(4));
+    mkdir($tempDir);
+    $tempTgz = "$tempDir/source.tgz";
+    copy($tgzFile, $tempTgz);
 
     try {
-        $phar = new PharData($tgzFile);
-        $phar->decompress(); // creates .tar in same dir
-        $originalTar = str_replace('.tgz', '.tar', $tgzFile);
-        if (!file_exists($originalTar)) return $data;
-        rename($originalTar, $tempTar);
+        $phar = new PharData($tempTgz);
+        $phar->decompress(); // creates source.tar inside $tempDir
+        $tarPath = "$tempDir/source.tar";
 
-        $tar = new PharData($tempTar);
+        if (!file_exists($tarPath)) {
+            // error_log("Failed to decompress $tempTgz");
+            throw new Exception("Missing .tar after decompression");
+        }
+
+        $tar = new PharData($tarPath);
         $iterator = new RecursiveIteratorIterator($tar);
 
         foreach ($iterator as $file) {
@@ -71,41 +76,48 @@ function extractJsonFromTgz($tgzFile, $stateAbbrev, $lastFetched) {
                 foreach ($json['observations']['data'] as $obs) {
                     if (($obs['sort_order'] ?? 1) == 0) {
                         $data[] = [
-                            'state_abbrev' => $stateAbbrev,
-                            'state' => $header['state'] ?? '',
-                            'copyright' => $json['observations']['notice'][0]['copyright'] ?? '',
-                            'id' => $header['ID'] ?? '',
-                            'name' => $header['name'] ?? '',
-                            'wmo_id' => $header['wmo_id'] ?? '',
-                            'aifstime_utc' => $obs['aifstime_utc'] ?? '',
+                            'state_abbrev'   => $stateAbbrev,
+                            'state'          => $header['state'] ?? '',
+                            'copyright'      => $json['observations']['notice'][0]['copyright'] ?? '',
+                            'id'             => $header['ID'] ?? '',
+                            'name'           => $header['name'] ?? '',
+                            'wmo_id'         => $header['wmo_id'] ?? '',
+                            'aifstime_utc'   => $obs['aifstime_utc'] ?? '',
                             'aifstime_local' => $obs['aifstime_local'] ?? '',
-                            'lat' => (float)($obs['lat'] ?? 0),
-                            'lon' => (float)($obs['lon'] ?? 0),
-                            'gust_kmh' => $obs['gust_kmh'] ?? null,
-                            'wind_kmh' => $obs['wind_spd_kmh'] ?? null,
-                            'air_temp' => $obs['air_temp'] ?? null,
-                            'apparent_t' => $obs['apparent_t'] ?? null,
+                            'lat'            => (float)($obs['lat'] ?? 0),
+                            'lon'            => (float)($obs['lon'] ?? 0),
+                            'gust_kmh'       => $obs['gust_kmh'] ?? null,
+                            'wind_kmh'       => $obs['wind_spd_kmh'] ?? null,
+                            'air_temp'       => $obs['air_temp'] ?? null,
+                            'apparent_t'     => $obs['apparent_t'] ?? null,
                             'rain_since_9am' => $obs['rain_trace'] ?? null,
-                            'last_fetched' => date('c', $lastFetched)
+                            'last_fetched'   => date('c', $lastFetched)
                         ];
                         break;
                     }
                 }
             }
         }
+
     } catch (Exception $e) {
-        // ignore failures
+        // error_log("extractJsonFromTgz error: " . $e->getMessage());
     }
 
-    if (file_exists($tempTar)) @unlink($tempTar);
+    // Cleanup
+    foreach (glob("$tempDir/*") as $f) @unlink($f);
+    @rmdir($tempDir);
+
     return $data;
 }
 
 function getRemoteFileMtime($ftpUrl) {
     $parts = parse_url($ftpUrl);
-    $conn = ftp_connect($parts['host'], 21, 10);
+    $conn = @ftp_connect($parts['host'], 21, 10);
     if (!$conn) return false;
-    if (!ftp_login($conn, 'anonymous', '')) { ftp_close($conn); return false; }
+    if (!@ftp_login($conn, 'anonymous', '')) {
+        ftp_close($conn);
+        return false;
+    }
     $mtime = ftp_mdtm($conn, ltrim($parts['path'], '/'));
     ftp_close($conn);
     return ($mtime !== -1) ? $mtime : false;
@@ -121,12 +133,20 @@ function downloadWithCache($ftpUrl, $localTgz, $lockFile, $cacheTtl) {
 
     $fpLock = fopen($lockFile, 'c');
     if (!$fpLock) return false;
-    if (!flock($fpLock, LOCK_EX)) return false;
 
-    // Double-check inside lock
+    if (!flock($fpLock, LOCK_EX)) {
+        fclose($fpLock);
+        return false;
+    }
+
+    // Double-check within lock
     $localExists = file_exists($localTgz);
     $localAge = $localExists ? $now - filemtime($localTgz) : PHP_INT_MAX;
-    if ($localAge < $cacheTtl) { flock($fpLock, LOCK_UN); fclose($fpLock); return $localTgz; }
+    if ($localAge < $cacheTtl) {
+        flock($fpLock, LOCK_UN);
+        fclose($fpLock);
+        return $localTgz;
+    }
 
     $remoteMtime = getRemoteFileMtime($ftpUrl);
     $lastSeen = file_exists($indexFile) ? (int)file_get_contents($indexFile) : 0;
@@ -136,9 +156,9 @@ function downloadWithCache($ftpUrl, $localTgz, $lockFile, $cacheTtl) {
         if ($data !== false) file_put_contents($localTgz, $data);
         file_put_contents($indexFile, $remoteMtime);
     } elseif ($remoteMtime === false && $localExists) {
-        touch($localTgz); // reset TTL even if FTP fails
+        touch($localTgz); // reset TTL if FTP fails
     } else {
-        if ($localExists) touch($localTgz); // reset TTL without downloading
+        if ($localExists) touch($localTgz);
     }
 
     flock($fpLock, LOCK_UN);
@@ -181,4 +201,3 @@ $geojson = [
 
 echo json_encode($geojson, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
 ?>
-
