@@ -19,6 +19,33 @@ $STATE_MAP = [
     'NT'  => 'IDD60910'
 ];
 
+// --- PERIODIC TEMPORARY FILE CLEANUP ---
+// Randomly run this cleanup about once in 30 invocations
+if (random_int(0, 29) === 0) {
+    $tmpBase = sys_get_temp_dir();
+    $pattern = $tmpBase . '/bom_*';
+    $now = time();
+    $maxAge = 3 * 24 * 60 * 60; // 3 days
+
+    foreach (glob($pattern, GLOB_ONLYDIR) as $dir) {
+        if (is_dir($dir)) {
+            $mtime = filemtime($dir);
+            if ($mtime !== false && ($now - $mtime) > $maxAge) {
+                $it = new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS);
+                $files = new RecursiveIteratorIterator($it, RecursiveIteratorIterator::CHILD_FIRST);
+                foreach ($files as $file) {
+                    if ($file->isDir()) {
+                        @rmdir($file->getRealPath());
+                    } else {
+                        @unlink($file->getRealPath());
+                    }
+                }
+                @rmdir($dir);
+            }
+        }
+    }
+}
+
 // --- PARAMETERS ---
 $stateParam = strtoupper($_GET['state'] ?? 'ALL');
 if ($stateParam !== 'ALL' && $stateParam !== 'ACT' &&
